@@ -23,8 +23,8 @@ class elasticCollector():
         self.logger = logging.getLogger(self.__class__.__name__)
         self.esDirName = esDir
         self.inputMonDir = inMonDir
-        self.movedModuleLegend = False
-        self.movedPathLegend = False
+        #self.movedModuleLegend = False
+        #self.movedPathLegend = False
 
     def start(self):
         self.run()
@@ -67,7 +67,7 @@ class elasticCollector():
             if filetype in [FAST,SLOW,QSTATUS]:
                 self.elasticize()
             elif self.esDirName in infile.dir:
-                if filetype in [INDEX,STREAM,OUTPUT,STREAMDQMHISTOUTPUT]:self.elasticize()
+                if filetype in [INDEX,STREAM,OUTPUT,STREAMDQMHISTOUTPUT,STREAMERR]:self.elasticize()
                 elif filetype in [EOLS]:self.elasticizeLS()
                 elif filetype in [COMPLETE]:
                     self.elasticize()
@@ -75,22 +75,28 @@ class elasticCollector():
                 elif filetype == FLUSH:
                     self.logger.debug('FLUSH')
                     es.flushAllLS()
-            elif filetype in [MODULELEGEND] and self.movedModuleLegend == False:
+            elif filetype in [MODULELEGEND]:# and self.movedModuleLegend == False:
                 try:
+                  if not self.infile.basename.endswith(".jsn"):
                     if not os.path.exists(self.inputMonDir+'/microstatelegend.leg') and os.path.exists(self.inputMonDir):
                         self.infile.moveFile(self.inputMonDir+'/microstatelegend.leg',silent=True,createDestinationDir=False)
+                  else:
+                    if not os.path.exists(self.inputMonDir+'/microstatelegend.jsn') and os.path.exists(self.inputMonDir):
+                        self.infile.moveFile(self.inputMonDir+'/microstatelegend.jsn',silent=True,createDestinationDir=False)
                 except Exception,ex:
                     logger.error(ex)
                     pass
-                self.movedModuleLegend = True
-            elif filetype in [PATHLEGEND] and self.movedPathLegend == False:
+            elif filetype in [PATHLEGEND]:# and self.movedPathLegend == False:
                 try:
+                  if not self.infile.basename.endswith(".jsn"):
                     if not os.path.exists(self.inputMonDir+'/pathlegend.leg') and os.path.exists(self.inputMonDir):
                         self.infile.moveFile(self.inputMonDir+'/pathlegend.leg',silent=True,createDestinationDir=False)
+                  else:
+                    if not os.path.exists(self.inputMonDir+'/pathlegend.jsn') and os.path.exists(self.inputMonDir):
+                        self.infile.moveFile(self.inputMonDir+'/pathlegend.jsn',silent=True,createDestinationDir=False)
                 except Exception,ex:
                     logger.error(ex)
                     pass
-                self.movedPathLegend = True
             elif filetype == INI:
                 destname = os.path.join(self.inputMonDir,infile.run+'_'+infile.ls+'_'+infile.stream+'_mon.ini')
                 try:
@@ -112,7 +118,7 @@ class elasticCollector():
                 es.elasticize_prc_istate(infile)
                 self.logger.debug(name+" going into prc-istate")
             elif filetype == SLOW: 
-                es.elasticize_prc_sstate(infile)      
+                es.elasticize_prc_sstate(infile)
                 self.logger.debug(name+" going into prc-sstate")
                 self.infile.deleteFile(silent=True)  
             elif filetype == INDEX: 
@@ -123,7 +129,7 @@ class elasticCollector():
                 self.logger.info(name+" going into prc-out")
                 es.elasticize_prc_out(infile)
                 self.infile.deleteFile(silent=True)
-            elif filetype in [OUTPUT,STREAMDQMHISTOUTPUT]:
+            elif filetype in [OUTPUT,STREAMDQMHISTOUTPUT,STREAMERR]:
                 self.logger.info(name+" going into fu-out")
                 es.elasticize_fu_out(infile)
                 self.infile.deleteFile(silent=True)
@@ -176,6 +182,17 @@ if __name__ == "__main__":
     monDir = os.path.join(dirname,"mon")
     tempDir = os.path.join(dirname,ES_DIR_NAME)
 
+
+    #find out total number of logical cores
+    pnproc = subprocess.Popen("nproc",shell=True, stdout=subprocess.PIPE)
+    pnproc.wait()
+    try:
+      nlogical = int(pnproc.stdout.read())
+    except:
+      logger.warning('unable to run nproc command')
+      nlogical=0
+    nprocid = str(nlogical) + '_' + str(int(nlogical -round(nlogical*(1. - conf.resource_use_fraction))))
+
     monMask = inotify.IN_CLOSE_WRITE | inotify.IN_MOVED_TO
     tempMask = inotify.IN_CLOSE_WRITE | inotify.IN_MOVED_TO
 
@@ -199,7 +216,7 @@ if __name__ == "__main__":
         mr.register_inotify_path(tempDir,tempMask)
         mr.start_inotify()
 
-        es = elasticBand.elasticBand('http://'+conf.es_local+':9200',rundirname,indexSuffix,expected_processes,update_modulo)
+        es = elasticBand.elasticBand('http://'+conf.es_local+':9200',rundirname,indexSuffix,expected_processes,update_modulo,nprocid)
 
         #starting elasticCollector thread
         ec = elasticCollector(ES_DIR_NAME,inmondir)

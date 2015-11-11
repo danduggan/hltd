@@ -61,6 +61,7 @@ abort_cloud_mode=False
 cached_pending_run = None
 resources_blocked_flag=False
 disabled_resource_allocation=False
+masked_resources=False
 
 fu_watchdir_is_mountpoint=False
 ramdisk_submount_size=0
@@ -280,7 +281,8 @@ def cleanup_mountpoints(remount=True):
         #make subdirectories if necessary and return
         if remount==True:
             try:
-                os.makedirs(os.path.join(conf.bu_base_dir,conf.ramdisk_subdirectory))
+                #there is no BU mount, so create subdirectory structure on FU
+                os.makedirs(os.path.join(conf.bu_base_dir,conf.ramdisk_subdirectory,'appliance','boxes'))
             except OSError:
                 pass
             try:
@@ -327,6 +329,10 @@ def cleanup_mountpoints(remount=True):
             lines = []
             with open(bus_config) as fp:
                 lines = fp.readlines()
+
+            if len(lines)==0:
+               #exception if invalid bus.config file
+               raise Exception("Missing BU address in bus.config file")
 
             if conf.mount_control_path and len(lines):
 
@@ -467,10 +473,13 @@ def cleanup_mountpoints(remount=True):
                         sys.exit(1)
 
                 i+=1
+        else:
+          logger.warning('starting hltd without bus.config file!')
         #clean up suspended state
         try:
             if remount==True:os.popen('rm -rf '+conf.watch_directory+'/suspend*')
         except:pass
+        return True
     except Exception as ex:
         logger.error("Exception in cleanup_mountpoints")
         logger.exception(ex)
@@ -552,19 +561,19 @@ def calculate_threadnumber():
     expected_processes = idlecount/nstreams
 
 
-def updateBlacklist():
+def updateBlacklist(blfile):
     black_list=[]
     active_black_list=[]
     #TODO:this will be updated to read blacklist from database
     if conf.role=='bu':
         try:
-            if os.stat('/etc/appliance/blacklist').st_size>0:
-                with open('/etc/appliance/blacklist','r') as fi:
+            if os.stat(blfile).st_size>0:
+                with open(blfile,'r') as fi:
                     try:
                         static_black_list = json.load(fi)
                         for item in static_black_list:
                             black_list.append(item)
-                        logger.info("found these resources in /etc/appliance/blacklist: "+str(black_list))
+                        logger.info("found these resources in " + blfile + " : " + str(black_list))
                     except ValueError:
                         logger.error("error parsing /etc/appliance/blacklist")
         except:
@@ -624,7 +633,8 @@ class system_monitor(threading.Thread):
                 self.directory = [os.path.join(bu_disk_ramdisk_CI_instance,'appliance','boxes')]
             else:
                 logger.info('Updating box info via data interface')
-                self.directory = [os.path.join(bu_disk_list_ramdisk_instance[0],'appliance','boxes')]
+                if len(bu_disk_list_ramdisk_instance):
+                  self.directory = [os.path.join(bu_disk_list_ramdisk_instance[0],'appliance','boxes')]
             self.check_file = [os.path.join(x,self.hostname) for x in self.check_directory]
         else:
             self.directory = [os.path.join(conf.watch_directory,'appliance/boxes/')]
@@ -722,6 +732,7 @@ class system_monitor(threading.Thread):
             logger.debug('entered system monitor thread ')
             global suspended
             global ramdisk_submount_size
+            global masked_resources
             res_path_temp = os.path.join(conf.watch_directory,'appliance','resource_summary_temp')
             res_path = os.path.join(conf.watch_directory,'appliance','resource_summary')
             selfhost = os.uname()[1]
@@ -873,7 +884,7 @@ class system_monitor(threading.Thread):
                             d_used = ((dirstat.f_blocks - dirstat.f_bavail)*dirstat.f_bsize)>>20,
                             d_total =  (dirstat.f_blocks*dirstat.f_bsize)>>20,
                         else:
-                            p = subprocess.Popen("du -s --exclude " + ES_DIR_NAME + " --exclude mon " + str(conf.watch_directory), shell=True, stdout=subprocess.PIPE)
+                            p = subprocess.Popen("du -s --exclude " + ES_DIR_NAME + " --exclude mon --exclude open " + str(conf.watch_directory), shell=True, stdout=subprocess.PIPE)
                             p.wait()
                             std_out=p.stdout.read()
                             out = std_out.split('\t')[0]
@@ -914,6 +925,8 @@ class system_monitor(threading.Thread):
                                 else: cloud_state="on"
                             elif resources_blocked_flag:
                               cloud_state = "resourcesReleased"
+                            elif masked_resources:
+                              cloud_state = "resourcesMasked"
                             else:
                               cloud_state = "off"
 
@@ -1082,7 +1095,10 @@ class OnlineResource:
     def NotifyNewRun(self,runnumber):
         self.runnumber = runnumber
         logger.info("calling start of run on "+self.cpu[0])
-        try:
+        attemptsLeft=3
+        while attemptsLeft>0:
+          attemptsLeft-=1
+          try:
             connection = httplib.HTTPConnection(self.cpu[0], conf.cgi_port - conf.cgi_instance_port_offset,timeout=10)
             connection.request("GET",'cgi-bin/start_cgi.py?run='+str(runnumber))
             response = connection.getresponse()
@@ -1091,8 +1107,14 @@ class OnlineResource:
             if response.status > 300: self.hoststate = 1
             else:
                 logger.info(response.read())
-        except Exception as ex:
-            logger.exception(ex)
+            break
+          except Exception as ex:
+            if attemptsLeft>0:
+              logger.error(str(ex))
+              logger.info('retrying connection to '+str(self.cpu[0]))
+            else:
+              logger.error('Exhausted attempts to contact '+str(self.cpu[0]))
+              logger.exception(ex)
 
     def NotifyShutdown(self):
         try:
@@ -1259,7 +1281,13 @@ class ProcessWatchdog(threading.Thread):
                 return
 
             #input dir check if cmsRun can not find the input
-            configuration_reachable = False if conf.dqm_machine==False and returncode==90 and not os.path.exists(self.inputdirpath) else True
+            inputdir_exists = os.path.exists(self.inputdirpath)
+            configuration_reachable = False if conf.dqm_machine==False and returncode==90 and not inputdir_exists else True
+
+            if conf.dqm_machine==False and returncode==90 and inputdir_exists:
+                if not os.path.exists(os.path.join(self.inputdirpath,'hlt','HltConfig.py')):
+                    logger.error("input run dir exists, but " + str(os.path.join(self.inputdirpath,'hlt','HltConfig.py')) + " is not present (cmsRun exit code 90)")
+                    configuration_reachable=False
 
             #cleanup actions- remove process from list and attempt restart on same resource
             if returncode != 0 and returncode!=None and configuration_reachable:
@@ -1361,7 +1389,7 @@ class ProcessWatchdog(threading.Thread):
                         logger.exception(ex)
 
             #successful end= release resource (TODO:maybe should mark aborted for non-0 error codes)
-            elif returncode == 0 or returncode == None:
+            elif returncode == 0 or returncode == None or not configuration_reachable:
 
                 if not configuration_reachable:
                   logger.info('pid '+str(pid)+' exit 90 (input directory and menu missing) from run ' + str(self.resource.runnumber) + ' - releasing resource ' + str(self.resource.cpu))
@@ -1672,11 +1700,20 @@ class Run:
         #self.lock.acquire()
 
         global machine_blacklist
+        bldir = os.path.join(self.dirname,'hlt')
+        blpath = os.path.join(self.dirname,'hlt','blacklist')
         if conf.role=='bu':
-            update_success,machine_blacklist=updateBlacklist()
-            if update_success==False:
-                logger.fatal("unable to check blacklist: giving up on run start")
-                return False
+            attempts=100
+            while not os.path.exists(bldir) and attempts>0:
+                time.sleep(0.05)
+                attempts-=1
+                if attempts<=0:
+                    logger.error('Timeout waiting for directory '+ bldir)
+                    break
+            if os.path.exists(blpath):
+              update_success,machine_blacklist=updateBlacklist(blpath)
+            else:
+                logger.error("unable to find blacklist file in "+bldir)
 
         for cpu in dirlist:
             #skip self
@@ -1729,7 +1766,7 @@ class Run:
         if conf.role=='bu' and conf.use_elasticsearch:
             logger.info("checking ES template")
             try:
-                setupES()
+                setupES(forceReplicas=conf.force_replicas)
             except Exception as ex:
                 logger.error("Unable to check run appliance template:"+str(ex))
 
@@ -1906,7 +1943,15 @@ class Run:
                     if self.elastic_monitor:
                         if killScripts:
                             self.elastic_monitor.terminate()
-                        self.elastic_monitor.wait()
+                        #allow monitoring thread to finish, but no more than 30 seconds after others
+                        killtimer = threading.Timer(30., self.elastic_monitor.kill)
+                        try:
+                            killtimer.start()
+                            self.elastic_monitor.wait()
+                        finally:
+                            killtimer.cancel()
+                        try:self.elastic_monitor=None
+                        except:pass
                 except OSError as ex:
                     if ex.errno==3:
                         logger.info("elastic.py for run " + str(self.runnumber) + " is not running")
@@ -2282,6 +2327,7 @@ class RunRanger:
         global resources_blocked_flag
         global cached_pending_run
         global disabled_resource_allocation
+        global masked_resources
         fullpath = event.fullpath
         logger.info('RunRanger: event '+fullpath)
         dirname=fullpath[fullpath.rfind("/")+1:]
@@ -2438,7 +2484,11 @@ class RunRanger:
                               +'*never* happen')
 
         elif dirname.startswith('herod') or dirname.startswith('tsunami'):
-            os.remove(fullpath)
+            try:
+              os.remove(fullpath)
+            except:
+              #safety net if cgi script removes herod
+              pass
             if conf.role == 'fu':
                 global q_list
                 logger.info("killing all CMSSW child processes")
@@ -2490,7 +2540,8 @@ class RunRanger:
                     logger.info(ex)
 
         elif dirname.startswith('cleanoutput'):
-            os.remove(fullpath)
+            try:os.remove(fullpath)
+            except:pass
             nlen = len('cleanoutput')
             if len(dirname)==nlen:
               logger.info('cleaning output (all run data)'+str(rn)) 
@@ -2504,7 +2555,8 @@ class RunRanger:
                 logger.error('Could not parse '+dirname)
 
         elif dirname.startswith('cleanramdisk'):
-            os.remove(fullpath)
+            try:os.remove(fullpath)
+            except:pass
             nlen = len('cleanramdisk')
             if len(dirname)==nlen:
               logger.info('cleaning ramdisk (all run data)'+str(rn)) 
@@ -2526,10 +2578,12 @@ class RunRanger:
                     elif conf.role=='bu':
                         run.ShutdownBU()
                 logger.info("terminated all ongoing runs via cgi interface (populationcontrol)")
-            os.remove(fullpath)
+            try:os.remove(fullpath)
+            except:pass
 
         elif dirname.startswith('harakiri') and conf.role == 'fu':
-            os.remove(fullpath)
+            try:os.remove(fullpath)
+            except:pass
             pid=os.getpid()
             logger.info('asked to commit seppuku:'+str(pid))
             try:
@@ -2596,10 +2650,13 @@ class RunRanger:
             #find out BU name from bus_config
             bu_name=None
             bus_config = os.path.join(os.path.dirname(conf.resource_base.rstrip(os.path.sep)),'bus.config')
-            if os.path.exists(bus_config):
-                for line in open(bus_config):
-                    bu_name=line.split('.')[0]
-                    break
+            try:
+                if os.path.exists(bus_config):
+                    for line in open(bus_config,'r'):
+                        bu_name=line.split('.')[0]
+                        break
+            except:
+                pass
 
             #first report to BU that umount was done
             try:
@@ -2657,6 +2714,7 @@ class RunRanger:
 
         elif dirname=='stop' and conf.role == 'fu':
             logger.fatal("Stopping all runs..")
+            masked_resources=True
             #make sure to not run inotify acquire while we are here
             resource_lock.acquire()
             disabled_resource_allocation=True
@@ -2741,8 +2799,7 @@ class RunRanger:
             os.remove(fullpath)
 
         elif dirname.startswith('include') and conf.role == 'fu':
-            #TODO: pick up latest ongoing run when activated ?
-            # even if this run was not active before on this FU? (problem with FU EoR in BU output event counting)
+            #masked_resources=False
             if cloud_mode==False:
                 logger.error('received notification to exit from cloud but machine is not in cloud mode!')
                 os.remove(fullpath)
@@ -2970,6 +3027,8 @@ class ResourceRanger:
             #this should be error (i.e. bus.confg should not be modified during a run)
             bus_config = os.path.join(os.path.dirname(conf.resource_base.rstrip(os.path.sep)),'bus.config')
             if event.fullpath == bus_config:
+              logger.warning("automatic remounting on changed bus.config is no longer supported. restart hltd to remount")
+              if False:
                 if self.managed_monitor:
                     self.managed_monitor.stop()
                     self.managed_monitor.join()
@@ -3212,7 +3271,9 @@ class hltd(Daemon2,object):
             (notice that hltd does not NEED to be restarted since it is watching the file all the time)
             """
 
-            cleanup_mountpoints()
+            if not cleanup_mountpoints():
+                logger.fatal("error mounting - terminating service")
+                os._exit(10)
 
             calculate_threadnumber()
 
@@ -3242,7 +3303,8 @@ class hltd(Daemon2,object):
  
         if conf.role == 'bu':
             global machine_blacklist
-            update_success,machine_blacklist=updateBlacklist()
+            #update_success,machine_blacklist=updateBlacklist()
+            machine_blacklist=[]
             global ramdisk_submount_size
             if self.instance == 'main':
                 #if there are other instance mountpoints in ramdisk, they will be subtracted from size estimate

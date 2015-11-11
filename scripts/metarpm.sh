@@ -119,6 +119,9 @@ for (( i=0; i < 12; i++ ))
 do
   params="$params ${lines[i]}"
 done
+dbsid=${lines[4]}
+dblogin=${lines[5]}
+dbpwd=${lines[6]}
 
 #write cache
 if [ -f $SCRIPTDIR/$PARAMCACHE ];
@@ -168,7 +171,7 @@ cd $TOPDIR
 # we are done here, write the specs and make the fu***** rpm
 cat > fffmeta.spec <<EOF
 Name: $PACKAGENAME
-Version: 1.7.2
+Version: 1.8.0
 Release: 0
 Summary: hlt daemon
 License: gpl
@@ -178,10 +181,12 @@ Source: none
 %define _topdir $TOPDIR
 BuildArch: $BUILD_ARCH
 AutoReqProv: no
-Requires:elasticsearch >= 1.4.2, hltd >= 1.7.2, cx_Oracle >= 5.1.2, java-1.8.0-oracle-headless >= 1.8.0.45
+Requires:elasticsearch >= 1.4.2, hltd >= 1.7.9, cx_Oracle >= 5.1.2, java-1.8.0-oracle-headless >= 1.8.0.45
 
 Provides:/opt/fff/configurefff.sh
+Provides:/opt/fff/dbcheck.sh
 Provides:/opt/fff/setupmachine.py
+Provides:/opt/fff/dbcheck.py
 Provides:/opt/fff/instances.input
 Provides:/etc/init.d/fffmeta
 Provides:/etc/init.d/fff
@@ -208,6 +213,7 @@ mkdir -p opt/fff/esplugins
 mkdir -p opt/fff/backup
 mkdir -p etc/init.d/
 cp $BASEDIR/python/setupmachine.py %{buildroot}/opt/fff/setupmachine.py
+cp $BASEDIR/python/dbcheck.py %{buildroot}/opt/fff/dbcheck.py
 cp $BASEDIR/etc/instances.input %{buildroot}/opt/fff/instances.input
 echo "#!/bin/bash" > %{buildroot}/opt/fff/configurefff.sh
 echo
@@ -226,6 +232,14 @@ echo "else"                                                            >> %{buil
 echo "  python2.6 /opt/hltd/python/fillresources.py"                   >> %{buildroot}/opt/fff/configurefff.sh
 echo "  python2.6 /opt/fff/setupmachine.py elasticsearch,hltd $params" >> %{buildroot}/opt/fff/configurefff.sh 
 echo "fi"                                                              >> %{buildroot}/opt/fff/configurefff.sh
+
+echo "#!/bin/bash" > %{buildroot}/opt/fff/dbcheck.sh
+echo "if [ -n \"\\\$1\" ]; then "                                   >> %{buildroot}/opt/fff/dbcheck.sh
+echo "  python2.6 /opt/fff/dbcheck.py $dblogin $dbpwd $dbsid $1"    >> %{buildroot}/opt/fff/dbcheck.sh
+echo "else" >> %{buildroot}/opt/fff/dbcheck.sh                      >> %{buildroot}/opt/fff/dbcheck.sh
+echo "  python2.6 /opt/fff/dbcheck.py $dblogin $dbpwd $dbsid"       >> %{buildroot}/opt/fff/dbcheck.sh
+echo "fi"                                                           >> %{buildroot}/opt/fff/dbcheck.sh
+
 
 cp $BASEDIR/esplugins/$pluginfile1 %{buildroot}/opt/fff/esplugins/$pluginfile1
 cp $BASEDIR/esplugins/$pluginfile2 %{buildroot}/opt/fff/esplugins/$pluginfile2
@@ -260,6 +274,10 @@ echo "fi"                                >> %{buildroot}/etc/init.d/fffmeta
 %attr( 755 ,root, root) /opt/fff/setupmachine.pyo
 %attr( 755 ,root, root) /opt/fff/instances.input
 %attr( 700 ,root, root) /opt/fff/configurefff.sh
+%attr( 700 ,root, root) /opt/fff/dbcheck.sh
+%attr( 755 ,root, root) /opt/fff/dbcheck.py
+%attr( 755 ,root, root) /opt/fff/dbcheck.pyc
+%attr( 755 ,root, root) /opt/fff/dbcheck.pyo
 %attr( 755 ,root, root) /etc/init.d/fffmeta
 %attr( 755 ,root, root) /etc/init.d/fff
 %attr( 444 ,root, root) /opt/fff/esplugins/$pluginfile1

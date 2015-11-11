@@ -181,23 +181,75 @@ class elasticBandBU:
     def elasticize_modulelegend(self,fullpath):
 
         self.logger.info(os.path.basename(fullpath))
-        stub = self.read_line(fullpath)
         document = {}
         document['_parent']= self.runnumber
         document['id']= "microstatelegend_"+self.runnumber
-        document['names']= self.read_line(fullpath)
+        if fullpath.endswith('.jsn'):
+          try:
+            with open(fullpath,'r') as fp:
+              doc = json.load(fp)
+              document['stateNames'] = doc['names']
+              try:document['reserved'] = doc['reserved']
+              except:document['reserved'] = 33
+              try:document['special'] = doc['special']
+              except:document['special'] = 7
+              nstring = ""
+              cnt = 0
+              outputcnt = 0
+              #fill in also old format for now
+              for sname in doc['names']:
+                  nstring+= str(cnt) + "=" + sname + " "
+                  cnt+=1
+                  if sname.startswith('hltOutput'):outputcnt+=1
+              try:document['output'] = doc['output']
+              except:document['output']=outputcnt
+              document['names'] = nstring
+          except Exception as ex:
+            self.logger.warning("can not parse "+fullpath + ' ' + str(ex))
+        else:
+          #old format
+          stub = self.read_line(fullpath)
+          document['names']= self.read_line(fullpath)
+          document['reserved'] = 33
+          document['special'] = 7
+          outputcnt=0
+          for sname in document['names'].split():
+            if "=hltOutput" in sname: outputcnt+=1
+          document['output'] = outputcnt
+          document['stateNames']=[]
+          nameTokens = document['names'].split()
+          for nameToken in nameTokens:
+           if '=' in nameToken:
+             idx,sn = nameToken.split('=')
+             document["stateNames"].append( sn )
+          
         documents = [document]
         return self.index_documents('microstatelegend',documents)
 
 
     def elasticize_pathlegend(self,fullpath):
-
         self.logger.info(os.path.basename(fullpath))
-        stub = self.read_line(fullpath)
         document = {}
         document['_parent']= self.runnumber
         document['id']= "pathlegend_"+self.runnumber
-        document['names']= self.read_line(fullpath)
+        if fullpath.endswith('.jsn'):
+          try:
+            with open(fullpath,'r') as fp:
+              doc = json.load(fp)
+              document['stateNames'] = doc['names']
+              document['reserved'] = doc['reserved']
+              #put old name format value
+              nstring=""
+              cnt=0
+              for sname in doc['names']:
+                nstring+= str(cnt) + "=" + sname + " "
+                cnt+=1
+              document['names'] = nstring
+          except Exception as ex:
+            self.logger.warning("can not parse "+fullpath)
+        else:
+          stub = self.read_line(fullpath)
+          document['names']= self.read_line(fullpath)
         documents = [document]
         return self.index_documents('pathlegend',documents)
 
@@ -278,6 +330,8 @@ class elasticBandBU:
             document['activeRuns'] = str(document['activeRuns']).strip('[]')
             document['appliance']=self.host
             document['instance']=self.conf.instance
+            if bu_doc==True:
+              document['blacklist']=self.black_list
             #only here
             document['host']=basename
             try:document.pop('version')
@@ -621,15 +675,6 @@ class RunCompletedChecker(threading.Thread):
 
             #exit if both checks are complete
             if check_es_complete==False:
-                try:
-                    if self.conf.close_es_index==True:
-                        #wait a bit for queries to complete
-                        time.sleep(10)
-                        resp = requests.post(self.urlclose,timeout=5)
-                        self.logger.info('closed appliance ES index for run '+str(self.nr))
-                except Exception as exc:
-                    self.logger.error('Error in closing run index')
-                    self.logger.exception(exc)
                 break
             #check every 10 seconds
             self.threadEvent.wait(10)

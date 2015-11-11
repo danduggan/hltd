@@ -11,7 +11,7 @@ import threading
 
 from inotifywrapper import InotifyWrapper
 import _inotify as inotify
-
+import _zlibextras as zlibextras
 
 ES_DIR_NAME = "TEMP_ES_DIRECTORY"
 UNKNOWN,OUTPUTJSD,DEFINITION,STREAM,INDEX,FAST,SLOW,OUTPUT,STREAMERR,STREAMDQMHISTOUTPUT,INI,EOLS,BOLS,EOR,COMPLETE,DAT,PDAT,PJSNDATA,PIDPB,PB,CRASH,MODULELEGEND,PATHLEGEND,BOX,QSTATUS,FLUSH,PROCESSING = range(27)            #file types 
@@ -259,8 +259,8 @@ class fileHandler(object):
         if ext == ".ini" and "/mon" in filepath: return INI
         if name.endswith("COMPLETE"): return COMPLETE
         if ext == ".fast" in filename: return FAST
-        if ext == ".leg" and "MICROSTATELEGEND" in name: return MODULELEGEND
-        if ext == ".leg" and "PATHLEGEND" in name: return PATHLEGEND
+        if name.startswith("MICROSTATELEGEND"): return MODULELEGEND
+        if name.startswith("PATHLEGEND"): return PATHLEGEND
         if "boxes" in filepath : return BOX
         if filename == 'flush': return FLUSH
         if filename == 'processing': return PROCESSING
@@ -272,7 +272,7 @@ class fileHandler(object):
         name,ext = self.name,self.ext
         splitname = name.split("_")
         if filetype in [STREAM,INI,PDAT,PJSNDATA,PIDPB,CRASH]: self.run,self.ls,self.stream,self.pid = splitname
-        elif filetype == SLOW: slowname,self.ls,self.pid = splitname #this is wrong
+        elif filetype == SLOW: slowname,self.ls,self.pid = splitname
         elif filetype == FAST: self.run,self.pid = splitname
         elif filetype in [DAT,PB,OUTPUT,STREAMERR,STREAMDQMHISTOUTPUT]: self.run,self.ls,self.stream,self.host = splitname
         elif filetype == INDEX: self.run,self.ls,self.index,self.pid = splitname
@@ -402,7 +402,7 @@ class fileHandler(object):
                 return False
         return True
 
-    def moveFile(self,newpath,copy = False,adler32=False,silent=False, createDestinationDir=True, missingDirAlert=True):
+    def moveFile(self,newpath,copy = False,adler32=False,silent=False, createDestinationDir=True, missingDirAlert=True, updateFileInfo=True):
         checksum=1
         if not self.exists(): return True,checksum
         oldpath = self.filepath
@@ -467,6 +467,8 @@ class fileHandler(object):
                 if silent==False:
                   if isinstance(e, IOError) and e.errno==2:
                       self.logger.warning("Error encountered in attempt to copy/move file to destination " + newpath + ":" + str(e))
+                  elif isinstance(e, OSError) and e.errno==18:
+                      self.logger.error("failed attempt to rename " + newpath_tmp + " to " + newpath + " error: "+ str(e))
                   else:
                       self.logger.exception(e)
                 retries-=1
@@ -484,8 +486,9 @@ class fileHandler(object):
                 self.logger.exception(e)
                 raise e
 
-        self.filepath = newpath
-        self.getFileInfo()
+        if updateFileInfo:
+            self.filepath = newpath
+            self.getFileInfo()
         return True,checksum
 
     #move file (works only on src as file, not directory) 
@@ -525,11 +528,84 @@ class fileHandler(object):
         if copy==False:os.unlink(src)
         return adler32c
 
+
+    def mergeDatInputs(self,destinationpath,doChecksum):
+        dirname = os.path.dirname(self.filepath)
+        ccomb=1
+        dst = None
+        adler32accum=1
+        json_size=0
+        copy_size=0
+        for input in self.inputs:
+            nproc = int(input.getFieldByName('Processed'))
+            nerr = int(input.getFieldByName('ErrorEvents'))
+            ifile = input.getFieldByName('Filelist')
+            ifilecksum = int(input.getFieldByName('FileAdler32'))
+            ifilesize = int(input.getFieldByName('Filesize'))
+
+            #no file to merge if n processed = 0
+            if nproc==0:
+                continue
+
+            #if any of 'proper' files has checksum set to -1, disable the check and substitute -1 in output json
+            if ifilecksum == -1:
+              ccomb = -1
+              doChecksum = False
+            if doChecksum:
+              ccomb = zlibextras.adler32_combine(ccomb,ifilecksum,ifilesize)
+
+            json_size+=ifilesize
+
+            #if going to merge, open input file
+            if dst == None:
+                dst = open(destinationpath,'wb')
+
+            length=16*1024
+            adler32c=1
+            file_size=0
+            with open(os.path.join(dirname,ifile), 'rb') as fsrc:
+                while 1:
+                    buf = fsrc.read(length)
+                    if not buf:
+                        break
+                    read_len=len(buf)
+                    file_size+=read_len
+                    if doChecksum:
+                      adler32c=zlib.adler32(buf,adler32c)
+                    dst.write(buf)
+            copy_size += file_size
+            #adler32c = adler32 & 0xffffffff
+            if doChecksum and ifilecksum != (adler32c & 0xffffffff):
+              self.logger.fatal("Checksum mismatch detected while reading file " + ifile + ". expected:"+str(ifilecksum)+" obtained:"+str(adler32c&0xffffffff))
+            if file_size!=ifilesize:
+              self.logger.fatal("Size mismatch is detected while reading file " + ifile + ". expected:"+str(ifilesize)+" obtained:"+str(file_size))
+            if doChecksum:
+              adler32accum = zlibextras.adler32_combine(adler32accum,adler32c,ifilesize) #& 0xffffffff
+
+        if dst:
+            dst.close()
+
+        #delete input files
+        for input in self.inputs:
+            ifile = input.getFieldByName('Filelist')
+            if nproc==0:continue
+            try:os.remove(ifile)
+            except:pass
+
+        self.setFieldByName("Filesize",json_size)
+        if doChecksum:
+            self.setFieldByName("FileAdler32",ccomb & 0xffffffff)
+        else:
+            self.setFieldByName("FileAdler32",-1)
+        checks_pass = (ccomb == adler32accum or not doChecksum ) and (copy_size == json_size)
+        self.logger.info(str(checks_pass))
+        return checks_pass
+
     def exists(self):
         return os.path.exists(self.filepath)
 
         #write self.outputData in json self.filepath
-    def writeout(self,empty=False):
+    def writeout(self,empty=False,verbose=True):
         filepath = self.filepath
         outputData = self.data
         self.logger.info(filepath)
@@ -539,12 +615,15 @@ class fileHandler(object):
                 if empty==False:
                     json.dump(outputData,fi)
         except Exception,e:
-            self.logger.exception(e)
+            if verbose:
+              self.logger.exception(e)
+            else:
+              self.logger.warning('unable to writeout ' + filepath)
             return False
         return True
 
     #TODO:make sure that the file is copied only once
-    def esCopy(self):
+    def esCopy(self, keepmtime=True):
         if not self.exists(): return
         if self.filetype in TO_ELASTICIZE:
             esDir = os.path.join(self.dir,ES_DIR_NAME)
@@ -554,7 +633,10 @@ class fileHandler(object):
                 retries = 5
                 while True:
                     try:
-                        shutil.copy2(self.filepath,newpathTemp)
+                        if keepmtime:
+                            shutil.copy2(self.filepath,newpathTemp)
+                        else:
+                            shutil.copy(self.filepath,newpathTemp)
                         break
                     except (OSError,IOError),e:
                         retries-=1
@@ -592,9 +674,9 @@ class fileHandler(object):
         self.data["definition"] = jsdfile
         self.data["source"] = host
 
-        if self.filetype==STREAMDQMHISTOUTPUT:
-            self.inputs.append(infile)
-        else:
+        self.inputs.append(infile)
+
+        if self.filetype!=STREAMDQMHISTOUTPUT:
             #append list of files if this is json metadata stream
             try:
                 findex,ftype = self.getFieldIndex("Filelist")

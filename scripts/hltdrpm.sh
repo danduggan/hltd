@@ -108,6 +108,14 @@ cp -R build/lib/elasticsearch/* $TOPDIR/usr/lib64/python2.6/site-packages/elasti
 
 
 cd $TOPDIR
+#_zlibextras library
+cd opt/hltd/lib/python-zlib-extras-0.1/
+rm -rf build
+python ./setup.py -q build
+cp -R build/lib.linux-x86_64-2.6/_zlibextras.so $TOPDIR/usr/lib64/python2.6/site-packages/
+
+
+cd $TOPDIR
 #python-prctl
 cd opt/hltd/lib/python-prctl/
 ./setup.py -q build
@@ -195,7 +203,7 @@ cd $TOPDIR
 # we are done here, write the specs and make the fu***** rpm
 cat > hltd.spec <<EOF
 Name: hltd
-Version: 1.7.4
+Version: 1.8.0
 Release: 0
 Summary: hlt daemon
 License: gpl
@@ -245,6 +253,7 @@ rm \$RPM_BUILD_ROOT/opt/hltd/python/setupmachine.py
 /usr/lib64/python2.6/site-packages/*watcher*
 /usr/lib64/python2.6/site-packages/*_inotify.so*
 /usr/lib64/python2.6/site-packages/*python_inotify*
+/usr/lib64/python2.6/site-packages/*_zlibextras.so
 /usr/lib64/python2.6/site-packages/pyelasticsearch
 /usr/lib64/python2.6/site-packages/elasticsearch
 /usr/lib64/python2.6/site-packages/urllib3_hltd

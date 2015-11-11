@@ -88,6 +88,18 @@ central_runindex_mapping = {
                     'names':{
                         'type':'string'
                         },
+                    'stateNames':{
+                        'type':'string','index':'not_analyzed'
+                        },
+                    'reserved':{
+                        'type':'integer'
+                        },
+                    'special':{
+                        'type':'integer'
+                        },
+                    'output':{
+                        'type':'integer'
+                        },
                     'id':{
                         'type':'string'
                         }
@@ -103,10 +115,15 @@ central_runindex_mapping = {
                     'names':{
                         'type':'string'
                         },
+                    'stateNames':{
+                        'type':'string','index':'not_analyzed'
+                        },
+                    'reserved':{
+                        'type':'integer'
+                        },
                     'id':{
                         'type':'string'
                         }
-
                     }
                 },
             'stream_label' : {
@@ -213,7 +230,8 @@ central_boxinfo_mapping = {
                       }
                   },
               'cloudState'    :{'type':'string',"index":"not_analyzed"},
-              'detectedStaleHandle':{'type':'boolean'}
+              'detectedStaleHandle':{'type':'boolean'},
+              'blacklist' : {'type':'string',"index":"not_analyzed"}
               #'activeRunsErrors':{'type':'string',"index":"not_analyzed"},#deprecated
               },
             '_timestamp' : { 
@@ -318,6 +336,9 @@ central_hltdlogs_mapping = {
                                     "type": "string",
                                     "index": "not_analyzed"
                             },
+                            "run" : {
+                                    "type":"integer"
+                            },
                             "lumi": {
                                     "type": "integer"
                             },
@@ -333,7 +354,7 @@ central_hltdlogs_mapping = {
                             },
                             "msgtime": {
                                     "type": "date",
-                                    "format": "dd-MMM-YYYY HH:mm:ss"
+                                    "format": "YYYY-mm-dd HH:mm:ss||dd-MM-YYYY HH:mm:ss"
                             },
                             "msgtimezone": {
                                     "type": "string",
